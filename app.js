@@ -1,7 +1,7 @@
 const express = require("express");
 const bcrypt = require("bcrypt")
 const MongoClient = require("mongodb").MongoClient;
-const objectId = require("mongodb").ObjectID;
+const ObjectId = require("mongodb").ObjectID;
 const jwt = require("jsonwebtoken")
 
 const app = express();
@@ -11,6 +11,23 @@ const mongoClient = new MongoClient("mongodb://localhost:27017/", { useNewUrlPar
 const SECRET_KEY = 'RANDOM_SECRET'
 
 let dbClient;
+
+const withAuthorization = (callback) => (request, response) => {
+    const collection = request.app.locals.collection
+    const userId = request.headers[ 'user-id' ]
+    const token = request.headers.token
+
+    if (!userId || !token)
+        return response.status(401).json({ error: 'Отказано в доступе' })
+
+    collection.findOne({ _id: ObjectId(userId), token }).then(user => {
+        if (!user) {
+            return response.status(401).json({ error: 'Отказано в доступе' })
+        }
+
+        callback(request, response)
+    })
+}
 
 mongoClient.connect(function(err, client){
     if(err) return console.log(err);
@@ -24,7 +41,7 @@ mongoClient.connect(function(err, client){
 
 app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content, Accept, Content-Type, Authorization, userId, token');
+    res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content, Accept, Content-Type, Authorization, user-id, token');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
     next();
 });
@@ -53,10 +70,17 @@ app.post("/api/login", jsonParser, function(request, response){
                 SECRET_KEY,
                 { expiresIn: '24h' }
             )
-            response.status(200).json({
-                userId: user._id,
-                token: token,
-            })
+            collection.updateOne({ _id: user._id }, { $set: { token } }).then(() =>
+                response.status(200).json({
+                    userId: user._id,
+                    token: token,
+                })).catch(
+                (error) => {
+                    response.status(500).json({
+                        error: error
+                    })
+                }
+            )
         }).catch(
             (error) => {
                 response.status(500).json({
@@ -71,39 +95,6 @@ app.post("/api/login", jsonParser, function(request, response){
             })
         }
     )
-})
-
-app.get('/api/planetList', jsonParser, (request, response) => {
-    const collection = request.app.locals.collectionPlanet
-    collection.find({}).toArray((err, planets) => {
-        if (err) {
-            response.status(500).json({
-                error: err
-            })
-            return
-        }
-
-        response.send(planets)
-    })
-})
-
-app.post('/api/addPlanet', jsonParser, (request, response) => {
-    const collection = request.app.locals.collectionPlanet
-
-    const planet = {
-        name: request.body.name,
-        weight: request.body.weight
-    }
-
-    collection.insertOne(planet, (err) => {
-        if (err) {
-            response.status(500).json({
-                error: err
-            })
-        }
-
-        response.send({})
-    })
 })
 
 app.post('/api/register', jsonParser, (request, response) => {
@@ -160,8 +151,38 @@ app.post('/api/register', jsonParser, (request, response) => {
     })
 })
 
+app.get('/api/planetList', jsonParser, withAuthorization((request, response) => {
+    const collection = request.app.locals.collectionPlanet
+    collection.find({}).toArray((err, planets) => {
+        if (err) {
+            response.status(500).json({
+                error: err
+            })
+            return
+        }
 
+        response.send(planets)
+    })
+}))
 
+app.post('/api/addPlanet', jsonParser, withAuthorization((request, response) => {
+    const collection = request.app.locals.collectionPlanet
+
+    const planet = {
+        name: request.body.name,
+        weight: request.body.weight
+    }
+
+    collection.insertOne(planet, (err) => {
+        if (err) {
+            response.status(500).json({
+                error: err
+            })
+        }
+
+        response.send({})
+    })
+}))
 
 process.on("SIGINT", () => {
     dbClient.close();
